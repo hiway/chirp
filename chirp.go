@@ -33,8 +33,23 @@ const (
 	NoteC5 = 523.25 // Network output note (major third below E5)
 
 	// Debug enables logging for audio debugging
-	Debug = true
+	Debug = false
+
+	// DefaultEchoTimeout is the time within which echoed characters are ignored
+	DefaultEchoTimeout = 1 * time.Millisecond
 )
+
+// inputBuffer tracks recent input characters for echo detection
+type inputBuffer struct {
+	mu      sync.Mutex
+	chars   []inputChar
+	timeout time.Duration
+}
+
+type inputChar struct {
+	char      byte
+	timestamp time.Time
+}
 
 var (
 	otoCtx *oto.Context
@@ -50,7 +65,31 @@ var (
 
 	// Cache for commonly used chirp patterns
 	chirpCache sync.Map // map[string]*bytes.Reader
+
+	// Sound state management
+	lastSoundTime   time.Time
+	soundStateMutex sync.Mutex
+	minSoundGap     = 25 * time.Millisecond // Minimum time between sounds
+
+	// Global input buffer for echo tracking
+	inputTracker = &inputBuffer{
+		timeout: DefaultEchoTimeout,
+	}
 )
+
+// IsSoundPlaying checks if we're within the minimum gap between sounds
+func IsSoundPlaying() bool {
+	soundStateMutex.Lock()
+	defer soundStateMutex.Unlock()
+	return time.Since(lastSoundTime) < minSoundGap
+}
+
+// markSoundStart updates the last sound time
+func markSoundStart() {
+	soundStateMutex.Lock()
+	lastSoundTime = time.Now()
+	soundStateMutex.Unlock()
+}
 
 // ChirpType represents different types of chirps
 type ChirpType int
@@ -248,6 +287,13 @@ func PlaySound(data io.Reader) error {
 
 // PlayChirp generates and plays a chirp with the given options.
 func PlayChirp(opts Options) error {
+	// Skip if we're still playing or in debounce period
+	if IsSoundPlaying() {
+		return nil
+	}
+
+	markSoundStart()
+
 	// Check cache first
 	if cached := getCachedChirp(opts); cached != nil {
 		return PlaySound(cached)
@@ -291,4 +337,57 @@ func debugf(format string, args ...interface{}) {
 	if Debug {
 		log.Printf(format, args...)
 	}
+}
+
+// TrackInput records a character that was just input by the user
+func TrackInput(c byte) {
+	inputTracker.mu.Lock()
+	defer inputTracker.mu.Unlock()
+
+	now := time.Now()
+	// Remove old entries
+	var validChars []inputChar
+	for _, ic := range inputTracker.chars {
+		if now.Sub(ic.timestamp) < inputTracker.timeout {
+			validChars = append(validChars, ic)
+		}
+	}
+
+	// Add new character
+	validChars = append(validChars, inputChar{
+		char:      c,
+		timestamp: now,
+	})
+
+	inputTracker.chars = validChars
+	if Debug {
+		debugf("Tracking input char: %c", c)
+	}
+}
+
+// IsRecentInput checks if a character was recently input
+func IsRecentInput(c byte) bool {
+	inputTracker.mu.Lock()
+	defer inputTracker.mu.Unlock()
+
+	now := time.Now()
+	// Clean up old entries while checking
+	var validChars []inputChar
+	isRecent := false
+
+	for _, ic := range inputTracker.chars {
+		age := now.Sub(ic.timestamp)
+		if age < inputTracker.timeout {
+			validChars = append(validChars, ic)
+			if ic.char == c {
+				isRecent = true
+				if Debug {
+					debugf("Found recent input match for char: %c (age: %v)", c, age)
+				}
+			}
+		}
+	}
+
+	inputTracker.chars = validChars
+	return isRecent
 }
