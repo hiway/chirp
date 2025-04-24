@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"log"
 	"math"
 	"sync"
@@ -32,12 +31,41 @@ const (
 	NoteE5 = 659.25 // Network input note
 	NoteC5 = 523.25 // Network output note (major third below E5)
 
-	// Debug enables logging for audio debugging
-	Debug = false
-
 	// DefaultEchoTimeout is the time within which echoed characters are ignored
 	DefaultEchoTimeout = 1 * time.Millisecond
 )
+
+// Debug and configuration variables
+var (
+	Debug       = false
+	echoTimeout = DefaultEchoTimeout
+	minSoundGap = 25 * time.Millisecond
+)
+
+// SetDebug enables or disables debug logging
+func SetDebug(enabled bool) {
+	Debug = enabled
+}
+
+// SetEchoTimeout sets the duration within which echoed characters are ignored
+func SetEchoTimeout(timeout time.Duration) {
+	echoTimeout = timeout
+	if inputTracker != nil {
+		inputTracker.timeout = timeout
+	}
+}
+
+// SetMinSoundGap sets the minimum duration between sounds
+func SetMinSoundGap(gap time.Duration) {
+	minSoundGap = gap
+}
+
+// Debugf prints debug messages when Debug is true
+func Debugf(format string, args ...interface{}) {
+	if Debug {
+		log.Printf(format, args...)
+	}
+}
 
 // inputBuffer tracks recent input characters for echo detection
 type inputBuffer struct {
@@ -69,13 +97,46 @@ var (
 	// Sound state management
 	lastSoundTime   time.Time
 	soundStateMutex sync.Mutex
-	minSoundGap     = 25 * time.Millisecond // Minimum time between sounds
 
 	// Global input buffer for echo tracking
 	inputTracker = &inputBuffer{
-		timeout: DefaultEchoTimeout,
+		timeout: echoTimeout,
 	}
 )
+
+// Options contains parameters for generating a chirp sound
+type Options struct {
+	// Frequency in Hz
+	Frequency float64
+	// Duration of the chirp
+	Duration time.Duration
+	// Volume level (0.0 to 1.0)
+	Volume float64
+}
+
+// Initialize sets up the audio context
+func Initialize() error {
+	_, err := initOto()
+	return err
+}
+
+// initOto initializes the oto context singleton
+func initOto() (*oto.Context, error) {
+	once.Do(func() {
+		op := &oto.NewContextOptions{}
+		op.SampleRate = SampleRate
+		op.ChannelCount = ChannelCount
+		op.Format = oto.FormatSignedInt16LE
+		op.BufferSize = BufferSizeSamples
+
+		var readyChan chan struct{}
+		otoCtx, readyChan, ctxErr = oto.NewContext(op)
+		if ctxErr == nil {
+			<-readyChan
+		}
+	})
+	return otoCtx, ctxErr
+}
 
 // IsSoundPlaying checks if we're within the minimum gap between sounds
 func IsSoundPlaying() bool {
@@ -91,174 +152,84 @@ func markSoundStart() {
 	soundStateMutex.Unlock()
 }
 
-// ChirpType represents different types of chirps
-type ChirpType int
-
-const (
-	// InputChirp is played when user types
-	InputChirp ChirpType = iota
-	// OutputChirp is played when terminal outputs
-	OutputChirp
-)
-
-// Options contains parameters for generating a chirp sound
-type Options struct {
-	// Frequency in Hz
-	Frequency float64
-	// Duration of the chirp
-	Duration time.Duration
-	// Volume level (0.0 to 1.0)
-	Volume float64
-}
-
-// DefaultOptions returns the default chirp options
-func DefaultOptions() Options {
-	return Options{
-		Frequency: 1000,
-		Duration:  50 * time.Millisecond,
-		Volume:    1.0,
+// PlayChirp generates and plays a chirp with the given options
+func PlayChirp(opts Options) error {
+	if IsSoundPlaying() {
+		return nil
 	}
-}
+	markSoundStart()
 
-// GetChirpOptions returns pleasing options for different chirp types
-func GetChirpOptions(chirpType ChirpType) Options {
-	switch chirpType {
-	case InputChirp:
-		return Options{
-			Frequency: NoteD5,                // Perfect fifth above output for local feedback
-			Duration:  25 * time.Millisecond, // Short enough to avoid masking subsequent sounds
-			Volume:    0.35,
-		}
-	case OutputChirp:
-		return Options{
-			Frequency: NoteG4,                // Lower note for output creates grounding effect
-			Duration:  35 * time.Millisecond, // Slightly longer for better distinction
-			Volume:    0.25,
-		}
-	default:
-		return DefaultOptions()
+	// Generate chirp data
+	data := generateChirp(opts)
+	if data == nil {
+		return fmt.Errorf("failed to generate chirp data")
 	}
+
+	return playSound(data)
 }
 
-// Initialize sets up the audio context. It should be called once at startup.
-func Initialize() error {
-	_, err := initOto()
-	return err
-}
-
-// initOto initializes the oto context singleton using oto/v3.
-func initOto() (*oto.Context, error) {
-	once.Do(func() {
-		op := &oto.NewContextOptions{}
-		op.SampleRate = SampleRate
-		op.ChannelCount = ChannelCount
-		op.Format = oto.FormatSignedInt16LE
-		// Set buffer size to 10ms for balance between latency and stability
-		op.BufferSize = 10 * time.Millisecond
-
-		var readyChan chan struct{}
-		otoCtx, readyChan, ctxErr = oto.NewContext(op)
-		if ctxErr == nil {
-			<-readyChan
-		}
-	})
-	return otoCtx, ctxErr
-}
-
-// GenerateChirp creates a sine wave tone with an envelope based on the provided options.
-func GenerateChirp(opts Options) io.Reader {
+// generateChirp creates a sine wave with ADSR envelope
+func generateChirp(opts Options) []byte {
 	if opts.Volume <= 0 {
-		return bytes.NewReader([]byte{})
+		return nil
 	}
 
-	durationSeconds := opts.Duration.Seconds()
-	numSamples := int(float64(SampleRate) * durationSeconds)
+	sampleRate := float64(SampleRate)
+	numSamples := int(opts.Duration.Seconds() * sampleRate)
 	data := make([]int16, numSamples*ChannelCount)
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
 
-	// Fixed envelope parameters in seconds
-	attack := 0.03  // 30ms attack
-	decay := 0.05   // 50ms decay
-	release := 0.1  // 100ms release
-	sustain := 0.85 // 85% of peak amplitude
+	// ADSR parameters (as fraction of total duration)
+	attack := 0.1  // 10% attack
+	decay := 0.2   // 20% decay
+	sustain := 0.7 // 70% of peak amplitude
+	release := 0.3 // 30% release
 
-	// Pre-calculate common values
-	sampleRateFloat := float64(SampleRate)
-	baseFreq := 2 * math.Pi * opts.Frequency
-	// Slight frequency modulation parameters
-	modFreq := 2 * math.Pi * 8         // 8 Hz modulation
-	modDepth := 0.001                  // Very subtle depth
-	volumeScale := opts.Volume * 28000 // Slightly reduced for gentler sound
+	// Pre-calculate frequency values
+	omega := 2.0 * math.Pi * opts.Frequency
+	amplitude := opts.Volume * 32767.0 // Scale to 16-bit range
 
 	for i := 0; i < numSamples; i++ {
-		t := float64(i) / sampleRateFloat
-		progress := t / durationSeconds
+		t := float64(i) / sampleRate
+		phase := omega * t
 
-		// Calculate frequency modulation
-		freqMod := 1.0 + modDepth*math.Sin(modFreq*t)
-		instantFreq := baseFreq * freqMod
+		// Calculate envelope
+		progress := float64(i) / float64(numSamples)
+		envelope := calculateEnvelope(progress, attack, decay, sustain, release)
 
-		envelope := calculateEnvelope(progress, attack, decay, release, sustain)
-		value := math.Sin(instantFreq*t) * envelope
+		// Generate sample
+		sample := amplitude * envelope * math.Sin(phase)
+		value := int16(sample)
 
-		// Scale to 16-bit signed range (-32768 to 32767)
-		amplitude := int16(value * volumeScale)
-
-		// Create stereo spread by slightly adjusting volumes
-		// This makes the sound feel more spacious and natural
-		leftVol := 0.95  // Left channel slightly quieter
-		rightVol := 1.05 // Right channel slightly louder
-		data[i*ChannelCount] = int16(float64(amplitude) * leftVol)
-		data[i*ChannelCount+1] = int16(float64(amplitude) * rightVol)
+		// Stereo output
+		data[i*2] = value   // Left channel
+		data[i*2+1] = value // Right channel
 	}
 
-	err := binary.Write(buf, binary.LittleEndian, data)
-	if err != nil {
-		log.Printf("Error writing chirp data: %v", err)
-		return &bytes.Buffer{}
-	}
-	return buf
+	// Convert to bytes
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, data)
+	return buf.Bytes()
 }
 
-func calculateEnvelope(progress, attack, decay, release, sustain float64) float64 {
-	if progress >= 1.0 {
-		return 0.0
-	}
-
-	// Attack phase
+// calculateEnvelope applies ADSR envelope to the sound
+func calculateEnvelope(progress, attack, decay, sustain, release float64) float64 {
 	if progress < attack {
 		return progress / attack
 	}
-
-	// Decay phase
 	if progress < attack+decay {
 		decayProgress := (progress - attack) / decay
 		return 1.0 - (1.0-sustain)*decayProgress
 	}
-
-	// Release phase - only enter in the final portion of the sound
 	if progress > 1.0-release {
 		releaseProgress := (progress - (1.0 - release)) / release
 		return sustain * (1.0 - releaseProgress)
 	}
-
-	// Sustain phase - maintain the sustain level for the majority of the sound
 	return sustain
 }
 
-// PlaySound plays the given audio data using the oto context.
-func PlaySound(data io.Reader) error {
-	if ctxErr != nil {
-		return ctxErr
-	}
-
-	// Read all data into a buffer
-	audioData, err := io.ReadAll(data)
-	if err != nil {
-		return err
-	}
-	if len(audioData) == 0 {
+// playSound plays the raw audio data
+func playSound(data []byte) error {
+	if len(data) == 0 {
 		return nil
 	}
 
@@ -267,11 +238,9 @@ func PlaySound(data io.Reader) error {
 		return err
 	}
 
-	// Create a new player with the audio data
-	player := ctx.NewPlayer(bytes.NewReader(audioData))
+	player := ctx.NewPlayer(bytes.NewReader(data))
 	defer player.Close()
 
-	// Play the sound
 	player.Play()
 
 	// Wait for playback to complete
@@ -279,64 +248,7 @@ func PlaySound(data io.Reader) error {
 		time.Sleep(time.Millisecond)
 	}
 
-	if buf, ok := data.(*bytes.Buffer); ok {
-		bufferPool.Put(buf)
-	}
 	return player.Err()
-}
-
-// PlayChirp generates and plays a chirp with the given options.
-func PlayChirp(opts Options) error {
-	// Skip if we're still playing or in debounce period
-	if IsSoundPlaying() {
-		return nil
-	}
-
-	markSoundStart()
-
-	// Check cache first
-	if cached := getCachedChirp(opts); cached != nil {
-		return PlaySound(cached)
-	}
-
-	// Generate new chirp
-	chirpData, err := io.ReadAll(GenerateChirp(opts))
-	if err != nil {
-		return err
-	}
-
-	// Cache for future use
-	cacheChirp(opts, chirpData)
-
-	return PlaySound(bytes.NewReader(chirpData))
-}
-
-// getCacheKey generates a unique key for chirp options
-func getCacheKey(opts Options) string {
-	return fmt.Sprintf("%.0f-%.0f-%.2f", opts.Frequency, opts.Duration.Seconds()*1000, opts.Volume)
-}
-
-// getCachedChirp retrieves a cached chirp if available
-func getCachedChirp(opts Options) io.Reader {
-	key := getCacheKey(opts)
-	if cached, ok := chirpCache.Load(key); ok {
-		reader := cached.(*bytes.Reader)
-		reader.Seek(0, io.SeekStart) // Reset to start
-		return reader
-	}
-	return nil
-}
-
-// cacheChirp stores a chirp in the cache
-func cacheChirp(opts Options, data []byte) {
-	key := getCacheKey(opts)
-	chirpCache.Store(key, bytes.NewReader(data))
-}
-
-func debugf(format string, args ...interface{}) {
-	if Debug {
-		log.Printf(format, args...)
-	}
 }
 
 // TrackInput records a character that was just input by the user
@@ -361,7 +273,7 @@ func TrackInput(c byte) {
 
 	inputTracker.chars = validChars
 	if Debug {
-		debugf("Tracking input char: %c", c)
+		Debugf("Tracking input char: %c", c)
 	}
 }
 
@@ -371,23 +283,23 @@ func IsRecentInput(c byte) bool {
 	defer inputTracker.mu.Unlock()
 
 	now := time.Now()
-	// Clean up old entries while checking
-	var validChars []inputChar
 	isRecent := false
 
+	// Clean up old entries while checking
+	var validChars []inputChar
 	for _, ic := range inputTracker.chars {
-		age := now.Sub(ic.timestamp)
-		if age < inputTracker.timeout {
+		if now.Sub(ic.timestamp) < inputTracker.timeout {
 			validChars = append(validChars, ic)
 			if ic.char == c {
 				isRecent = true
-				if Debug {
-					debugf("Found recent input match for char: %c (age: %v)", c, age)
-				}
 			}
 		}
 	}
 
 	inputTracker.chars = validChars
+	if isRecent && Debug {
+		Debugf("Found recent input match for char: %c", c)
+	}
+
 	return isRecent
 }
