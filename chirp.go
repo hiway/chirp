@@ -15,13 +15,23 @@ import (
 
 const (
 	// SampleRate is the number of samples per second
-	SampleRate = 44100
-	// ChannelCount represents mono audio
-	ChannelCount = 1
+	SampleRate = 48000
+	// ChannelCount represents stereo audio (better quality than mono)
+	ChannelCount = 2
 	// BitDepthInBytes represents 16-bit audio
 	BitDepthInBytes = 2
-	// BufferSize is the size of the audio buffer
-	BufferSize = 1024
+	// BufferSize represents number of samples, smaller means lower latency
+	BufferSizeSamples = 480 // 10ms at 48kHz
+
+	// Musical note frequencies (A4 = 440Hz standard tuning)
+	NoteC5 = 523.25
+	NoteE5 = 659.25
+	NoteG5 = 783.99
+	NoteA5 = 880.00
+	NoteC6 = 1046.50
+
+	// Debug enables logging for audio debugging
+	Debug = true
 )
 
 var (
@@ -40,6 +50,16 @@ var (
 	chirpCache sync.Map // map[string]*bytes.Reader
 )
 
+// ChirpType represents different types of chirps
+type ChirpType int
+
+const (
+	// InputChirp is played when user types
+	InputChirp ChirpType = iota
+	// OutputChirp is played when terminal outputs
+	OutputChirp
+)
+
 // Options contains parameters for generating a chirp sound
 type Options struct {
 	// Frequency in Hz
@@ -54,8 +74,28 @@ type Options struct {
 func DefaultOptions() Options {
 	return Options{
 		Frequency: 1000,
-		Duration:  15 * time.Millisecond,
+		Duration:  50 * time.Millisecond,
 		Volume:    1.0,
+	}
+}
+
+// GetChirpOptions returns pleasing options for different chirp types
+func GetChirpOptions(chirpType ChirpType) Options {
+	switch chirpType {
+	case InputChirp:
+		return Options{
+			Frequency: NoteE5,
+			Duration:  40 * time.Millisecond,
+			Volume:    0.4,
+		}
+	case OutputChirp:
+		return Options{
+			Frequency: NoteC5,
+			Duration:  20 * time.Millisecond,
+			Volume:    0.3,
+		}
+	default:
+		return DefaultOptions()
 	}
 }
 
@@ -71,10 +111,9 @@ func initOto() (*oto.Context, error) {
 		op := &oto.NewContextOptions{}
 		op.SampleRate = SampleRate
 		op.ChannelCount = ChannelCount
-		// Use 16-bit signed format for better audio quality
 		op.Format = oto.FormatSignedInt16LE
-		// Keep small buffer size (5ms) for low latency
-		op.BufferSize = 5 * time.Millisecond
+		// Set buffer size to 10ms for balance between latency and stability
+		op.BufferSize = 10 * time.Millisecond
 
 		var readyChan chan struct{}
 		otoCtx, readyChan, ctxErr = oto.NewContext(op)
@@ -91,37 +130,46 @@ func GenerateChirp(opts Options) io.Reader {
 		return bytes.NewReader([]byte{})
 	}
 
-	numSamples := int(float64(SampleRate) * opts.Duration.Seconds())
+	durationSeconds := opts.Duration.Seconds()
+	numSamples := int(float64(SampleRate) * durationSeconds)
 	data := make([]int16, numSamples*ChannelCount)
 	buf := bufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 
-	// Envelope parameters
-	attack := 0.005  // 5ms
-	decay := 0.01    // 10ms
-	release := 0.015 // 15ms
-	sustain := 0.7   // 70% of peak amplitude
+	// Fixed envelope parameters in seconds
+	attack := 0.03  // 30ms attack
+	decay := 0.05   // 50ms decay
+	release := 0.1  // 100ms release
+	sustain := 0.85 // 85% of peak amplitude
 
 	// Pre-calculate common values
-	angularFreq := 2 * math.Pi * opts.Frequency
 	sampleRateFloat := float64(SampleRate)
-	durationSeconds := opts.Duration.Seconds()
-	// Scale to 16-bit signed range (-32768 to 32767)
-	volumeScale := opts.Volume * 32767 // Maximum amplitude for 16-bit audio
+	baseFreq := 2 * math.Pi * opts.Frequency
+	// Slight frequency modulation parameters
+	modFreq := 2 * math.Pi * 8         // 8 Hz modulation
+	modDepth := 0.001                  // Very subtle depth
+	volumeScale := opts.Volume * 28000 // Slightly reduced for gentler sound
 
 	for i := 0; i < numSamples; i++ {
 		t := float64(i) / sampleRateFloat
 		progress := t / durationSeconds
 
+		// Calculate frequency modulation
+		freqMod := 1.0 + modDepth*math.Sin(modFreq*t)
+		instantFreq := baseFreq * freqMod
+
 		envelope := calculateEnvelope(progress, attack, decay, release, sustain)
-		value := math.Sin(angularFreq*t) * envelope
+		value := math.Sin(instantFreq*t) * envelope
 
 		// Scale to 16-bit signed range (-32768 to 32767)
 		amplitude := int16(value * volumeScale)
 
-		for ch := 0; ch < ChannelCount; ch++ {
-			data[i*ChannelCount+ch] = amplitude
-		}
+		// Create stereo spread by slightly adjusting volumes
+		// This makes the sound feel more spacious and natural
+		leftVol := 0.95  // Left channel slightly quieter
+		rightVol := 1.05 // Right channel slightly louder
+		data[i*ChannelCount] = int16(float64(amplitude) * leftVol)
+		data[i*ChannelCount+1] = int16(float64(amplitude) * rightVol)
 	}
 
 	err := binary.Write(buf, binary.LittleEndian, data)
@@ -133,15 +181,28 @@ func GenerateChirp(opts Options) io.Reader {
 }
 
 func calculateEnvelope(progress, attack, decay, release, sustain float64) float64 {
+	if progress >= 1.0 {
+		return 0.0
+	}
+
+	// Attack phase
 	if progress < attack {
 		return progress / attack
-	} else if progress < attack+decay {
+	}
+
+	// Decay phase
+	if progress < attack+decay {
 		decayProgress := (progress - attack) / decay
 		return 1.0 - (1.0-sustain)*decayProgress
-	} else if progress > 1.0-release {
+	}
+
+	// Release phase - only enter in the final portion of the sound
+	if progress > 1.0-release {
 		releaseProgress := (progress - (1.0 - release)) / release
 		return sustain * (1.0 - releaseProgress)
 	}
+
+	// Sustain phase - maintain the sustain level for the majority of the sound
 	return sustain
 }
 
@@ -159,6 +220,7 @@ func PlaySound(data io.Reader) error {
 	if len(audioData) == 0 {
 		return nil
 	}
+
 	ctx, err := initOto()
 	if err != nil {
 		return err
@@ -168,8 +230,7 @@ func PlaySound(data io.Reader) error {
 	player := ctx.NewPlayer(bytes.NewReader(audioData))
 	defer player.Close()
 
-	// Set initial volume and play
-	player.SetVolume(1.0)
+	// Play the sound
 	player.Play()
 
 	// Wait for playback to complete
@@ -222,4 +283,10 @@ func getCachedChirp(opts Options) io.Reader {
 func cacheChirp(opts Options, data []byte) {
 	key := getCacheKey(opts)
 	chirpCache.Store(key, bytes.NewReader(data))
+}
+
+func debugf(format string, args ...interface{}) {
+	if Debug {
+		log.Printf(format, args...)
+	}
 }

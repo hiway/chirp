@@ -8,7 +8,6 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -54,16 +53,8 @@ func main() {
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
 	// Options for different chirp sounds
-	keypressChirp := chirp.Options{
-		Frequency: 2000,
-		Duration:  20 * time.Millisecond,
-		Volume:    1.0,
-	}
-	outputChirp := chirp.Options{
-		Frequency: 1000,
-		Duration:  15 * time.Millisecond,
-		Volume:    1.0,
-	}
+	keypressChirp := chirp.GetChirpOptions(chirp.InputChirp)
+	outputChirp := chirp.GetChirpOptions(chirp.OutputChirp)
 
 	// Read user keystrokes, play chirp and forward to pty
 	go func() {
