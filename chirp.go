@@ -24,11 +24,13 @@ const (
 	BufferSizeSamples = 480 // 10ms at 48kHz
 
 	// Musical note frequencies (A4 = 440Hz standard tuning)
-	NoteC5 = 523.25
-	NoteE5 = 659.25
-	NoteG5 = 783.99
-	NoteA5 = 880.00
-	NoteC6 = 1046.50
+	// Using perfect fifth (3:2 ratio) for local feedback
+	NoteG4 = 392.00 // Local output note
+	NoteD5 = 587.33 // Local input note (perfect fifth above G4)
+
+	// Using major third (5:4 ratio) for network feedback
+	NoteE5 = 659.25 // Network input note
+	NoteC5 = 523.25 // Network output note (major third below E5)
 
 	// Debug enables logging for audio debugging
 	Debug = true
@@ -84,15 +86,15 @@ func GetChirpOptions(chirpType ChirpType) Options {
 	switch chirpType {
 	case InputChirp:
 		return Options{
-			Frequency: NoteE5,
-			Duration:  40 * time.Millisecond,
-			Volume:    0.4,
+			Frequency: NoteD5,                // Perfect fifth above output for local feedback
+			Duration:  25 * time.Millisecond, // Short enough to avoid masking subsequent sounds
+			Volume:    0.35,
 		}
 	case OutputChirp:
 		return Options{
-			Frequency: NoteC5,
-			Duration:  20 * time.Millisecond,
-			Volume:    0.3,
+			Frequency: NoteG4,                // Lower note for output creates grounding effect
+			Duration:  35 * time.Millisecond, // Slightly longer for better distinction
+			Volume:    0.25,
 		}
 	default:
 		return DefaultOptions()
