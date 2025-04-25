@@ -1,40 +1,39 @@
-# Chirp Configuration File
-# This file can be placed in:
-# 1. /usr/local/etc/chirp.toml (system-wide)
-# 2. ~/.config/chirp/chirp.toml (user-specific)
-# 3. ./chirp.toml (local directory)
-# Later files override settings from earlier ones.
+# Sample chirp configuration file
 
-# Shell to use (defaults to $SHELL environment variable)
-shell = ""  # Empty means use $SHELL or fallback to /bin/sh
+[samples]
+  # Local feedback for typing
+  [samples.local]
+    frequency = 392  # G4 note
+    duration = 40    # milliseconds
+    volume = 0.3     # 0.0 to 1.0
 
-# Input sound configuration (when you type)
-[input_sound]
-frequency = 620  # Slightly higher pitch for clarity
-duration_ms = 20 # Shorter for crispness
-volume = 0.30    # Slightly quieter default
+  # Remote feedback for shell output
+  [samples.remote]
+    frequency = 587  # D5 note
+    duration = 300
+    volume = 0.3
 
-# Output sound configuration (terminal output - RTT cue)
-[output_sound]
-frequency = 415  # G#4/Ab4 - Distinct from input
-duration_ms = 40 # Slightly longer to signify response
-volume = 0.25    # Keep relatively quiet
+  # Special feedback for errors
+  [samples.error]
+    frequency = 220  # A3 note
+    duration = 100
+    volume = 0.4
 
-# Advanced settings
-echo_timeout_ms = 1    # Time to wait before considering output not an echo
-min_sound_gap_ms = 25  # Minimum time between sounds
-debug = false          # Enable debug logging
+[queues]
+  # Match enter key and common line endings
+  [queues.local]
+    match = ["\n"]
+    sample = "local"
+    max_length = 1
 
-[input_sound_overrides]
-enter     = { frequency = 880, duration_ms = 50, volume = 0.4 }  # A5 - Clear confirmation
-esc       = { frequency = 310, duration_ms = 40, volume = 0.3 }  # D#4/Eb4 - Lower/softer escape
-backspace = { frequency = 261, duration_ms = 35, volume = 0.5 }  # C4 - Lower pitch for correction
-tab       = { frequency = 740, duration_ms = 30, volume = 0.3 }  # F#5/Gb5 - Distinct navigation
-up        = { frequency = 660, duration_ms = 25, volume = 0.25 } # E5 - Subtle navigation
-down      = { frequency = 440, duration_ms = 25, volume = 0.25 } # A4 - Subtle navigation
-left      = { frequency = 550, duration_ms = 25, volume = 0.25 } # C#5/Db5 - Subtle navigation
-right     = { frequency = 587, duration_ms = 25, volume = 0.25 } # D5 - Subtle navigation
-delete    = { frequency = 277, duration_ms = 35, volume = 0.5 }  # C#4/Db4 - Similar to backspace but distinct
-ctrl_c    = { frequency = 988, duration_ms = 60, volume = 0.45 } # B5 - High pitch for interrupt
-ctrl_d    = { frequency = 246, duration_ms = 50, volume = 0.35 } # B3 - Low pitch for exit/EOF
-ctrl_l    = { frequency = 784, duration_ms = 40, volume = 0.3 }  # G5 - Clear screen sound
+  # Match common shell prompt characters
+  [queues.remote]
+    match = ["$", "#", "%", ">"]
+    sample = "remote"
+    max_length = 1
+
+  # Match common error indicators
+  [queues.error]
+    match = ["error:", "Error:", "ERROR:", "failed:", "Failed:", "FAILED:", "loss"]
+    sample = "error"
+    max_length = 2  # Allow a small queue for rapid errors
