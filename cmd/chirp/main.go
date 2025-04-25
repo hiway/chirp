@@ -18,6 +18,11 @@ import (
 	"github.com/hiway/chirp"
 )
 
+// GraphemeSoundConfig allows per-grapheme chirp settings
+// Key is the grapheme (string), value is SoundConfig
+// Example: "⏎" (Enter), "⎋" (Esc), "←" (Left Arrow)
+type GraphemeSoundConfig map[string]SoundConfig
+
 // Config holds the application configuration
 type Config struct {
 	Shell         string      `toml:"shell"`
@@ -26,6 +31,9 @@ type Config struct {
 	EchoTimeoutMs int64       `toml:"echo_timeout_ms"`  // Echo timeout in milliseconds
 	MinSoundGapMs int64       `toml:"min_sound_gap_ms"` // Min gap between sounds in ms
 	Debug         bool        `toml:"debug"`
+
+	// New field for per-grapheme sound overrides
+	InputSoundOverrides GraphemeSoundConfig `toml:"input_sound_overrides"`
 }
 
 // SoundConfig defines parameters for a chirp sound
@@ -52,6 +60,9 @@ func defaultConfig() Config {
 		EchoTimeoutMs: 1,  // Default 1ms echo timeout
 		MinSoundGapMs: 25, // Default 25ms min sound gap
 		Debug:         false,
+
+		// Initialize the new field
+		InputSoundOverrides: make(GraphemeSoundConfig),
 	}
 }
 
@@ -101,6 +112,11 @@ func loadConfig() Config {
 		}
 	}
 
+	// Normalize keys in InputSoundOverrides (optional, for robustness)
+	if cfg.InputSoundOverrides == nil {
+		cfg.InputSoundOverrides = make(GraphemeSoundConfig)
+	}
+
 	// Apply loaded settings that require initialization
 	chirp.SetDebug(cfg.Debug)
 	chirp.SetEchoTimeout(time.Duration(cfg.EchoTimeoutMs) * time.Millisecond)
@@ -111,6 +127,75 @@ func loadConfig() Config {
 	}
 
 	return cfg
+}
+
+// Map control characters and escape sequences to symbolic names
+var controlKeyMap = map[byte]string{
+	0x1b: "esc",       // ESC
+	0x7f: "backspace", // DEL/Backspace
+	0x09: "tab",       // TAB
+	0x0d: "enter",     // CR (Enter)
+	0x0a: "enter",     // LF (Enter, for some terminals)
+	0x03: "ctrl_c",    // Ctrl+C (SIGINT)
+	0x04: "ctrl_d",    // Ctrl+D (EOF)
+	0x0c: "ctrl_l",    // Ctrl+L (Clear screen)
+}
+
+// Map escape sequences for arrow keys and others to symbolic names
+var escapeSeqMap = map[string]string{
+	"[A":  "up",
+	"[B":  "down",
+	"[C":  "right",
+	"[D":  "left",
+	"[3~": "delete", // Delete key
+}
+
+// getChirpOptionsForInput returns chirp options for a given input byte slice
+func getChirpOptionsForInput(cfg Config, buf []byte, i *int) chirp.Options {
+	// Check for ESC sequence (arrow keys, delete key, etc.)
+	if buf[*i] == 0x1b && *i+2 < len(buf) {
+		// Handle longer sequences like Delete key ([3~)
+		if *i+3 < len(buf) && buf[*i+1] == '[' && buf[*i+2] == '3' && buf[*i+3] == '~' {
+			*i += 3 // Skip the escape sequence
+			if override, ok := cfg.InputSoundOverrides["delete"]; ok {
+				return chirp.Options{
+					Frequency: override.Frequency,
+					Duration:  time.Duration(override.DurationMs) * time.Millisecond,
+					Volume:    override.Volume,
+				}
+			}
+		}
+		// Handle standard arrow keys
+		if buf[*i+1] == '[' {
+			// Build the sequence directly into the map lookup for efficiency
+			if name, ok := escapeSeqMap[string([]byte{buf[*i+1], buf[*i+2]})]; ok {
+				*i += 2 // Skip the escape sequence
+				if override, ok := cfg.InputSoundOverrides[name]; ok {
+					return chirp.Options{
+						Frequency: override.Frequency,
+						Duration:  time.Duration(override.DurationMs) * time.Millisecond,
+						Volume:    override.Volume,
+					}
+				}
+			}
+		}
+	}
+	// Check for control key
+	if name, ok := controlKeyMap[buf[*i]]; ok {
+		if override, ok := cfg.InputSoundOverrides[name]; ok {
+			return chirp.Options{
+				Frequency: override.Frequency,
+				Duration:  time.Duration(override.DurationMs) * time.Millisecond,
+				Volume:    override.Volume,
+			}
+		}
+	}
+	// Fallback to default input sound
+	return chirp.Options{
+		Frequency: cfg.InputSound.Frequency,
+		Duration:  time.Duration(cfg.InputSound.DurationMs) * time.Millisecond,
+		Volume:    cfg.InputSound.Volume,
+	}
 }
 
 func main() {
@@ -152,12 +237,6 @@ func main() {
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	// Create chirp options from loaded config
-	keypressChirp := chirp.Options{
-		Frequency: cfg.InputSound.Frequency,
-		Duration:  time.Duration(cfg.InputSound.DurationMs) * time.Millisecond,
-		Volume:    cfg.InputSound.Volume,
-	}
 	outputChirp := chirp.Options{
 		Frequency: cfg.OutputSound.Frequency,
 		Duration:  time.Duration(cfg.OutputSound.DurationMs) * time.Millisecond,
@@ -180,13 +259,13 @@ func main() {
 			if n > 0 {
 				// Only track and chirp for printable characters and common control chars
 				for i := 0; i < n; i++ {
-					// Use the simpler isPrintableOrControl check for now
 					if isPrintableOrControl(buf[i]) {
 						chirp.TrackInput(buf[i])
+						opts := getChirpOptionsForInput(cfg, buf, &i)
+						go chirp.PlayChirp(opts)
 					}
 				}
 				// Play chirp only once per input batch
-				go chirp.PlayChirp(keypressChirp) // Run in goroutine to avoid blocking input
 				if _, err := p.Write(buf[:n]); err != nil {
 					log.Printf("Pty write error: %v", err)
 					return // Exit goroutine on pty write error

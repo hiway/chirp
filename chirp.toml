@@ -10,17 +10,31 @@ shell = ""  # Empty means use $SHELL or fallback to /bin/sh
 
 # Input sound configuration (when you type)
 [input_sound]
-frequency = 587.33  # Note D5
-duration_ms = 25    # Duration in milliseconds
-volume = 0.35      # Volume level (0.0 to 1.0)
+frequency = 620  # Slightly higher pitch for clarity
+duration_ms = 20 # Shorter for crispness
+volume = 0.30    # Slightly quieter default
 
-# Output sound configuration (terminal output)
+# Output sound configuration (terminal output - RTT cue)
 [output_sound]
-frequency = 392.00  # Note G4
-duration_ms = 35    # Duration in milliseconds
-volume = 0.25      # Volume level (0.0 to 1.0)
+frequency = 415  # G#4/Ab4 - Distinct from input
+duration_ms = 40 # Slightly longer to signify response
+volume = 0.25    # Keep relatively quiet
 
 # Advanced settings
 echo_timeout_ms = 1    # Time to wait before considering output not an echo
 min_sound_gap_ms = 25  # Minimum time between sounds
 debug = false          # Enable debug logging
+
+[input_sound_overrides]
+enter     = { frequency = 880, duration_ms = 50, volume = 0.4 }  # A5 - Clear confirmation
+esc       = { frequency = 310, duration_ms = 40, volume = 0.3 }  # D#4/Eb4 - Lower/softer escape
+backspace = { frequency = 261, duration_ms = 35, volume = 0.5 }  # C4 - Lower pitch for correction
+tab       = { frequency = 740, duration_ms = 30, volume = 0.3 }  # F#5/Gb5 - Distinct navigation
+up        = { frequency = 660, duration_ms = 25, volume = 0.25 } # E5 - Subtle navigation
+down      = { frequency = 440, duration_ms = 25, volume = 0.25 } # A4 - Subtle navigation
+left      = { frequency = 550, duration_ms = 25, volume = 0.25 } # C#5/Db5 - Subtle navigation
+right     = { frequency = 587, duration_ms = 25, volume = 0.25 } # D5 - Subtle navigation
+delete    = { frequency = 277, duration_ms = 35, volume = 0.5 }  # C#4/Db4 - Similar to backspace but distinct
+ctrl_c    = { frequency = 988, duration_ms = 60, volume = 0.45 } # B5 - High pitch for interrupt
+ctrl_d    = { frequency = 246, duration_ms = 50, volume = 0.35 } # B3 - Low pitch for exit/EOF
+ctrl_l    = { frequency = 784, duration_ms = 40, volume = 0.3 }  # G5 - Clear screen sound

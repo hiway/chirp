@@ -65,6 +65,15 @@ frequency = 392.00  # Note G4
 duration_ms = 35    # Duration in milliseconds
 volume = 0.25      # Volume level (0.0 to 1.0)
 
+# Per-key (symbolic name) input chirp overrides
+[input_sound_overrides]
+enter = { frequency = 800, duration_ms = 60, volume = 0.5 }   # Enter
+esc = { frequency = 300, duration_ms = 40, volume = 0.4 }     # Esc
+left = { frequency = 500, duration_ms = 30, volume = 0.3 }    # Left arrow
+right = { frequency = 600, duration_ms = 30, volume = 0.3 }   # Right arrow
+up = { frequency = 700, duration_ms = 30, volume = 0.3 }      # Up arrow
+down = { frequency = 400, duration_ms = 30, volume = 0.3 }    # Down arrow
+
 # Advanced settings
 echo_timeout_ms = 1    # Time to wait before considering output not an echo
 min_sound_gap_ms = 25  # Minimum time between sounds
@@ -82,9 +91,17 @@ debug = false          # Enable debug logging
   - `frequency`: Tone frequency in Hz
   - `duration_ms`: Sound duration in milliseconds
   - `volume`: Volume level (0.0 to 1.0)
+- `input_sound_overrides`: Map of symbolic key names to custom sound settings for input. Example keys: `enter`, `esc`, `left`, `right`, `up`, `down`, `tab`, `backspace`. Each value is a table with `frequency`, `duration_ms`, and `volume`.
 - `echo_timeout_ms`: How long to wait (in milliseconds) before considering output as not being an echo of input
 - `min_sound_gap_ms`: Minimum time (in milliseconds) between consecutive sounds
 - `debug`: Enable debug logging
+
+#### Notes on Per-Key Chirp Overrides
+
+- For control keys, use symbolic names (e.g., `enter`, `esc`, `left`, `right`, `up`, `down`, `tab`, `backspace`).
+- For printable Unicode characters, use the character itself as the key.
+- If a key is not listed in `input_sound_overrides`, the default `[input_sound]` settings are used.
+- This system is extensible: in the future, you can add word/phrase-based chirps (e.g., for "error", "success", etc.).
 
 ## Dependencies
 
